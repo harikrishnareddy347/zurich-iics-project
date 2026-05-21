@@ -1,469 +1,194 @@
-# Workflow Orchestration - Advanced Patterns
+# Advanced Workflow Orchestration Patterns
 
 ## Workflow 1: W_DAILY_BATCH_POLICY_SYNC
 
 ### Purpose
-Daily batch synchronization of policy data across all systems with error handling and reconciliation.
+Daily batch synchronization of policy data across all systems.
 
-### Workflow Schedule
-```
-Frequency: Daily
-Start Time: 02:00 UTC (2 AM)
-Time Zone: UTC
-Duration Target: < 30 minutes
-Retry Policy: 2 retries on failure
-```
+### Schedule
+- Frequency: Daily
+- Start Time: 02:00 UTC
+- Duration Target: < 30 minutes
+- Retry Policy: 2 retries on failure
 
-### Workflow Structure
+### Workflow Steps
 
-```
-┌─────────────────────────────────────────────────┐
-│             START TASK                          │
-│     Initialize workflow variables               │
-└─────────────────────────────────────────────────┘
-                      ↓
-┌─────────────────────────────────────────────────┐
-│       PRE-CHECK VALIDATIONS                     │
-│  - Database connectivity check                 │
-│  - Secure Agent status                         │
-│  - Network connectivity                        │
-└─────────────────────────────────────────────────┘
-                      ↓
-┌─────────────────────────────────────────────────┐
-│    RUN MAPPING: M_POLICY_EXTRACT_TRANSFORM     │
-│  - Extract from Oracle DB                      │
-│  - Apply transformations                       │
-│  - Output: 150,000 policy records              │
-└─────────────────────────────────────────────────┘
-                      ↓ (Success/Failure logic)
-          ┌───────────┴───────────┐
-          ▼                       ▼
-     [Success]              [Failure]
-          ↓                       ↓
-    Continue              Retry Logic
-                          (Max 2x)
-                          │
-                    ┌─────┴─────┐
-                    ▼           ▼
-               [Retry]     [Still Fail]
-                    │           │
-                    └─────┬─────┘
-                          ▼
-                    Send Alert
-                      ↓ (Continue anyway)
-          ↓
-┌─────────────────────────────────────────────────┐
-│  RUN MAPPING: Load to Salesforce               │
-│  - Update Opportunities                        │
-│  - Handle upserts                              │
-│  - Expected: 150,000 records                   │
-└─────────────────────────────────────────────────┘
-                      ↓
-┌─────────────────────────────────────────────────┐
-│  RUN MAPPING: Load to Snowflake                │
-│  - Insert/Update POLICY_DIM                    │
-│  - Create audit records                        │
-│  - Expected: 150,000 records                   │
-└─────────────────────────────────────────────────┘
-                      ↓
-┌─────────────────────────────────────────────────┐
-│  RUN MAPPING: Backup to AWS S3                 │
-│  - Export to Parquet format                    │
-│  - Partition by policy type                    │
-│  - Compress with Snappy                        │
-└─────────────────────────────────────────────────┘
-                      ↓
-┌─────────────────────────────────────────────────┐
-│  RECONCILIATION CHECK                          │
-│  - Compare record counts                       │
-│  - Validate data consistency                   │
-│  - Flag discrepancies                          │
-└─────────────────────────────────────────────────┘
-                      ↓
-┌─────────────────────────────────────────────────┐
-│  SEND NOTIFICATION EMAIL                       │
-│  - Status: Success/Partial Success/Failure     │
-│  - Record counts                               │
-│  - Processing time                             │
-│  - Error summary (if any)                      │
-│  - To: operations@zurich.com                   │
-└─────────────────────────────────────────────────┘
-                      ↓
-┌─────────────────────────────────────────────────┐
-│            END TASK                             │
-│     Log workflow completion                    │
-└─────────────────────────────────────────────────┘
-```
+1. **START & PRE-CHECKS**
+   - Database connectivity verification
+   - Secure Agent health check
+   - Network connectivity test
 
-### Error Handling
+2. **EXTRACT PHASE**
+   - Run M_POLICY_EXTRACT_TRANSFORM mapping
+   - Extract from Oracle DB (Expected: 150K records)
+   - Apply transformations
 
-```
-Task Failure Scenarios:
+3. **ERROR HANDLING**
+   - If extraction fails: Retry 2 times
+   - Max interval: 5 minutes between retries
+   - If still fails: Send alert, continue to other targets
+   - Status: Mark as PARTIAL_SUCCESS
 
-1. Mapping Extraction Fails
-   - Retry: 2 times with 5-min interval
-   - If still fails: Send alert, skip this mapping
-   - Continue: Load mappings for other targets
-   - Status: PARTIAL_SUCCESS
+4. **LOAD PHASE**
+   - Load to Salesforce Opportunities
+   - Load to Snowflake POLICY_DIM
+   - Backup to AWS S3 (Parquet format)
 
-2. Target Load Fails
-   - Retry: Implemented in mapping level
-   - If fails: Quarantine records
-   - Continue: Other targets
-   - Status: PARTIAL_SUCCESS
+5. **VALIDATION**
+   - Compare record counts
+   - Validate data consistency
+   - Flag discrepancies for review
 
-3. Network Timeout
-   - Timeout: 300 seconds
-   - Auto-retry: Every 30 seconds
-   - Max retries: 3
-   - If fails: Log and continue
+6. **NOTIFICATION**
+   - Send email report to operations
+   - Include: Status, record counts, processing time
+   - Alert on errors or warnings
 
-4. Reconciliation Mismatch
-   - Log: Discrepancy details
-   - Alert: Data team
-   - Flag: Manual review required
-   - Status: SUCCESS_WITH_WARNINGS
-```
+7. **END**
+   - Log completion
+   - Update monitoring dashboard
 
-### Performance Metrics
-
-```
-Monitoring:
-- Start Time: Log start timestamp
-- End Time: Log end timestamp
-- Duration: Log total time taken
-- Records Processed: Log counts per target
-- Error Count: Log failures
-- Success Rate: Calculate percentage
-
-Targets:
+### Performance Targets
 - Processing time: < 30 minutes
 - Success rate: > 99%
 - Error rate: < 1%
 - Data loss: 0%
-```
 
 ---
 
 ## Workflow 2: W_REALTIME_CLAIMS_SYNC
 
 ### Purpose
-Real-time claim submission, validation, enrichment, and processing via REST API.
+Real-time claim submission and processing via REST API.
 
-### API Endpoint Configuration
-
+### API Endpoint
 ```
-Endpoint: POST /api/v1/claims/submit
-Authentication: OAuth 2.0 / API Key
+POST /api/v1/claims/submit
+Authentication: OAuth 2.0
 Timeout: 30 seconds
-Retry: 3 attempts
 Rate Limit: 1000 requests/hour
 ```
 
-### Workflow Flow
+### Processing Steps
 
-```
-                    [Claim Submission API Request]
-                              ↓
-                    [Parse JSON Payload]
-                              ↓
-                    [Extract claim details]
-                              ↓
-┌──────────────────────────────────────────────────┐
-│     STEP 1: VALIDATE REQUEST                    │
-│  - Check mandatory fields                      │
-│  - Validate field formats                      │
-│  - Check data types                            │
-└──────────────────────────────────────────────────┘
-                    ↓ (Success/Failure)
-            ┌───────┴───────┐
-            ▼               ▼
-        [Valid]        [Invalid]
-            ↓               ↓
-        Continue      Return Error
-                      (HTTP 400)
-                              ↓
-                    [Send to error queue]
-                              ↓
-                        [END]
+1. **REQUEST VALIDATION**
+   - Check mandatory fields
+   - Validate field formats
+   - Verify data types
+   - Response: HTTP 400 if invalid
 
-(Continuing from Valid path...)
-            ↓
-┌──────────────────────────────────────────────────┐
-│     STEP 2: BUSINESS VALIDATION                 │
-│  - Verify policy exists                        │
-│  - Check policy is active                      │
-│  - Verify claim type matches coverage          │
-│  - Validate date of loss                       │
-│  - Check claim amount limits                   │
-└──────────────────────────────────────────────────┘
-                    ↓ (Success/Failure)
-            ┌───────┴───────┐
-            ▼               ▼
-        [Valid]        [Invalid]
-            ↓               ↓
-        Continue      Return Business
-                      Error (HTTP 422)
-                              ↓
-                        [END]
+2. **BUSINESS VALIDATION**
+   - Verify policy exists
+   - Check policy is active
+   - Validate claim type coverage match
+   - Check date of loss (< 30 days)
+   - Response: HTTP 422 if fails
 
-(Continuing from Valid path...)
-            ↓
-┌──────────────────────────────────────────────────┐
-│     STEP 3: DATA ENRICHMENT                      │
-│  - Lookup policy details                       │
-│  - Lookup customer profile                     │
-│  - Retrieve claims history                     │
-│  - Get reference data                          │
-└──────────────────────────────────────────────────┘
-                    ↓
-┌──────────────────────────────────────────────────┐
-│     STEP 4: FRAUD DETECTION                     │
-│  - Compare with historical claims              │
-│  - Check for duplicates                        │
-│  - Apply fraud scoring rules                   │
-│  - Assign fraud risk level                     │
-└──────────────────────────────────────────────────┘
-                    ↓
-┌──────────────────────────────────────────────────┐
-│     STEP 5: APPLY BUSINESS RULES                │
-│  - Auto-approval rule                          │
-│  - Escalation rule                             │
-│  - Hold rule                                   │
-│  - Documentation rule                          │
-└──────────────────────────────────────────────────┘
-                    ↓
-┌──────────────────────────────────────────────────┐
-│     STEP 6: LOAD TO TARGET SYSTEMS              │
-│  - Insert to CLAIMS table (Oracle)             │
-│  - Update claim status                         │
-│  - Create audit record                         │
-│  - Send to workflow queue                      │
-└──────────────────────────────────────────────────┘
-                    ↓
-┌──────────────────────────────────────────────────┐
-│     STEP 7: SEND NOTIFICATIONS                  │
-│  - Email confirmation to customer              │
-│  - SMS status update                           │
-│  - Dashboard notification to adjuster          │
-│  - Log audit trail                             │
-└──────────────────────────────────────────────────┘
-                    ↓
-┌──────────────────────────────────────────────────┐
-│     STEP 8: RETURN RESPONSE                     │
-│  - HTTP 200 OK                                 │
-│  - Return: Claim ID, Status, Next Steps        │
-│  - Include: Estimated Processing Time          │
-└──────────────────────────────────────────────────┘
-                    ↓
-              [END API Response]
-```
+3. **DATA ENRICHMENT**
+   - Lookup policy details
+   - Retrieve customer profile
+   - Get claims history
+   - Fetch reference data
 
-### Business Rules Engine
+4. **FRAUD DETECTION**
+   - Compare with historical claims
+   - Check for duplicates
+   - Apply fraud scoring
+   - Assign risk level (1-100)
 
-```
-Rule 1: Auto-Approval
-IF (claimAmount < 1000 
-    AND fraudScore < 20 
-    AND customerRating > 4)
-THEN 
-  Status = "Auto-Approved"
-  AssignedTo = "Process Queue"
-  ProcessingTime = "2 business days"
-END IF
+5. **BUSINESS RULES ENGINE**
+   - IF (amount < 1000 AND fraud < 20) → Auto-Approve
+   - IF (amount > 50000 OR fraud > 80) → Escalate
+   - IF (fraud > 60 AND amount > 10000) → Hold (7 days)
 
-Rule 2: Escalation
-IF (claimAmount > 50000 
-    OR fraudScore > 80 
-    OR claimType IN ["Total Loss", "Major Injury"])
-THEN 
-  Status = "Pending Review"
-  AssignedTo = "Senior Adjuster"
-  Priority = "High"
-  ProcessingTime = "5 business days"
-END IF
+6. **DATABASE LOAD**
+   - Insert to CLAIMS table (Oracle)
+   - Update claim status
+   - Create audit record
 
-Rule 3: Documentation Required
-IF (claimType IN ["Total Loss", "Major Injury"])
-THEN 
-  RequireDocuments = ["Police Report", "Medical Records"]
-  AutoNotify = true
-  NotifyMessage = "Please provide supporting documents"
-END IF
+7. **NOTIFICATIONS**
+   - Email confirmation to customer
+   - SMS status update
+   - Dashboard notification to adjuster
 
-Rule 4: Hold Rule
-IF (fraudScore > 60 AND claimAmount > 10000)
-THEN 
-  Status = "On Hold"
-  NotifyFraudTeam = true
-  HoldDays = 7
-  AutoReleaseDays = 7
-END IF
-```
+8. **RESPONSE**
+   - HTTP 200 OK
+   - Return: Claim ID, Status, Processing Time
 
-### Error Handling
-
-```
-Errors During Processing:
-
-1. Policy Not Found
-   - HTTP 404
-   - Message: "Policy not found"
-   - Action: Queue for manual review
-   - Retry: No automatic retry
-
-2. Network Timeout
-   - HTTP 504
-   - Retry: 3 times with exponential backoff
-   - Wait: 1s, 2s, 4s
-   - If fails: Return 503 Service Unavailable
-
-3. Database Connection Error
-   - HTTP 500
-   - Retry: 2 times immediately
-   - If fails: Return error, queue for replay
-   - Log: Error details for investigation
-
-4. Validation Error
-   - HTTP 422 Unprocessable Entity
-   - Return: Detailed error message
-   - Action: Do not retry, return to caller
-```
-
-### Performance Characteristics
-
-```
-Response Time Targets:
-- Validation: < 500ms
-- Enrichment: < 1s
-- Fraud Check: < 1s
-- Business Rules: < 500ms
-- Database Load: < 1s
-- Total: < 5 seconds (P99)
-
-Throughput:
-- Capacity: 1000 requests/hour (minimum)
-- Scaling: Auto-scale based on queue depth
-- Peak handling: 2000 requests/hour
-
-Availability:
-- Target: 99.95% uptime
-- Maintenance window: None (handle gracefully)
-```
+### Performance SLA
+- Response time P99: < 5 seconds
+- Availability: 99.95%
+- Throughput: 1000+ requests/hour
 
 ---
 
 ## Workflow 3: W_COMPLIANCE_REPORT_GENERATOR
 
 ### Purpose
-Generate regulatory compliance reports (SOX, GDPR, ISO) on scheduled basis.
+Generate regulatory compliance reports.
 
-### Schedule & Frequency
+### Schedule
 
-```
-Weekly Reports:
-- SOX Compliance Report: Every Friday 6 PM UTC
-- GDPR Data Access Report: Every Sunday 8 PM UTC
+**Weekly**:
+- SOX Report: Friday 6 PM UTC
+- GDPR Report: Sunday 8 PM UTC
 
-Monthly Reports:
-- Claims Settlement Ratio: 1st of month 10 PM UTC
-- Premium Adequacy: 1st of month 11 PM UTC
-- Risk Concentration: 15th of month 10 PM UTC
+**Monthly**:
+- Claims Settlement: 1st, 10 PM UTC
+- Premium Adequacy: 1st, 11 PM UTC
+- Risk Concentration: 15th, 10 PM UTC
 
-Quarterly Reports:
-- Comprehensive Compliance Review: End of quarter
+### Report Generation Steps
 
-Annual Reports:
-- SOX Audit Report: Dec 31 11:59 PM UTC
-```
-
-### Workflow Steps
-
-```
-1. Gather Data
+1. **DATA GATHERING**
    - Query policy tables
    - Query claims tables
-   - Query transaction logs
+   - Extract transaction logs
 
-2. Apply Compliance Rules
-   - Filter sensitive data
-   - Apply retention rules
+2. **DATA PREPARATION**
+   - Apply compliance filters
    - Mask PII data
+   - Apply retention rules
+   - Anonymize where required
 
-3. Generate Report
+3. **REPORT GENERATION**
    - Format as PDF/Excel
    - Add digital signatures
    - Create audit trail
 
-4. Distribute Report
+4. **DISTRIBUTION**
    - Email to regulatory bodies
-   - Archive to secure location
-   - Send to internal stakeholders
+   - Archive to secure storage
+   - Send to stakeholders
 
-5. Log Completion
-   - Record distribution details
+5. **COMPLETION**
+   - Log distribution details
    - Verify delivery
-   - Update compliance dashboard
-```
+   - Update dashboard
 
 ---
 
 ## Best Practices
 
 ### Workflow Design
-
-```
-1. Keep workflows modular
-   - Single responsibility per workflow
-   - Reusable components
-   - Easy to test and debug
-
-2. Implement comprehensive error handling
-   - Try-catch blocks
-   - Retry logic
-   - Fallback options
-   - Clear error messages
-
-3. Monitor and log
-   - Log all major steps
-   - Track execution time
-   - Monitor resource usage
-   - Alert on failures
-
-4. Document thoroughly
-   - Document workflow purpose
-   - Document each step
-   - Document error scenarios
-   - Document expected outputs
-
-5. Test extensively
-   - Unit test individual steps
-   - Integration test workflow flow
-   - Performance test under load
-   - UAT with business users
-```
+- Keep modular (single responsibility)
+- Implement comprehensive error handling
+- Monitor and log all major steps
+- Document thoroughly
+- Test extensively (unit, integration, UAT)
 
 ### Performance Optimization
+- Parallel processing for independent tasks
+- Batch processing to reduce database calls
+- Connection pooling
+- Lookup caching
+- Regular performance monitoring
 
-```
-1. Parallel Processing
-   - Run independent mappings in parallel
-   - Reduces overall processing time
-   - Monitor resource usage
+### Error Handling
+- Try-catch blocks with recovery logic
+- Retry with exponential backoff
+- Fallback options
+- Clear error messages
+- Notifications on critical failures
 
-2. Batch Processing
-   - Group records into batches
-   - Reduces database calls
-   - Improves throughput
-
-3. Connection Pooling
-   - Reuse connections
-   - Reduce connection overhead
-   - Set appropriate pool size
-
-4. Caching
-   - Cache lookup tables
-   - Cache reference data
-   - Refresh at appropriate intervals
-```
-
+**Last Updated**: May 2026
